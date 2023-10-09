@@ -1,0 +1,438 @@
+---
+title: 'screen'
+author: 'Ryou Yamazaki'
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    self_contained: true
+    code_folding: hide
+    toc: true
+    toc_float: true
+    highlight: zenburn
+---
+
+
+<style type="text/css">
+.main-container {
+  max-width: 100% !important;
+  margin: auto;
+}
+</style>
+
+```{r setup}
+knitr::opts_chunk$set(message=FALSE, warning=FALSE)
+```
+
+
+```{r screen}
+library(readr)
+library(readxl)
+library(openxlsx)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(stringr)
+library(sangeranalyseR)
+library(yaml)
+
+source('./R/seq.R')
+source('./R/utils.R')
+source('./R/screen.R')
+source('./R/check.R')
+source('./R/checkReads.R')
+source('./R/checkContig.R')
+
+## -------------------------------------
+## arch
+## -------------------------------------
+arch <- Sys.info()['machine']
+
+if (arch=='aarch64'){
+    psep <- '/'
+} else if (arch=='x86-64'){
+    psep <- '\\'
+} else {
+    stop('check your os type.')
+}
+
+## -------------------------------------
+## load param.yaml
+## -------------------------------------
+if (file.exists('param.yaml')==FALSE){
+    stop('param.yaml not found.')
+}
+
+log_info('loading param.yaml...')
+
+yaml <- yaml.load_file('param.yaml')
+
+
+input_dir       <- str_replace_all(yaml$input_dir,     '\\\\', '/')
+## stem            <- str_c(yaml$stem, '[0-9]+', collapse='')
+forward_string  <- yaml$forward_string
+reverse_string  <- yaml$reverse_string
+template_path   <- str_replace_all(yaml$template_path, '\\\\', '/')
+design_path     <- str_replace_all(yaml$design_path,   '\\\\', '/')
+design_sheet    <- yaml$design_sheet
+skiplist_path   <- str_replace_all(yaml$skiplist_path, '\\\\', '/')
+skiplist_sheet  <- yaml$skiplist_sheet
+renamelist_path <- yaml$renamelist_path
+rerun           <- yaml$rerun
+codon_path      <- str_replace_all(yaml$codon_path,    '\\\\', '/')
+
+## analysis
+TrimmingMethod        <- yaml$TrimmingMethod
+M1TrimmingCutoff      <- as.numeric(yaml$M1TrimmingCutoff)
+M2CutoffQualityScore  <- as.numeric(yaml$M2CutoffQualityScore)
+M2SlidingWindowSize   <- as.numeric(yaml$M2SlidingWindowSize)
+baseNumPerRow         <- as.numeric(yaml$baseNumPerRow)
+heightPerRow          <- as.numeric(yaml$heightPerRow)
+signalRatioCutoff     <- as.numeric(yaml$signalRatioCutoff)
+read5primeOffset      <- as.numeric(yaml$read5primeOffset)
+read3primeOffset      <- as.numeric(yaml$read3primeOffset)
+allow2ndBasecallNotN  <- yaml$allow2ndBasecallNotN
+minReadLength         <- as.numeric(yaml$minReadLength)
+minContigLength       <- as.numeric(yaml$minContigLength)
+
+
+
+## -------------------------------------
+## Optional exception list
+## -------------------------------------
+## for IgG HorL
+## pl <- read_xlsx('./misc/plasmid_list_230324.xlsx', sheet='Nivolumab_IgG')
+## pl %>%
+##     filter(Chain!='H') %>%
+##     rename(Vno=`Vector No.`) %>%
+##     .$Vno %>%
+##     unique() -> skip
+##
+## skip <- c('Niv_IgG_0226', 'Niv_IgG_0248', 'Niv_IgG_0286', 'Niv_IgG_0288', 'Niv_IgG_0296','Niv_IgG_0301')
+## skiplist_path       <- './misc/skip_list.xlsx'
+## skiplist_sheet <- 'Sheet1'
+
+## -------------------------------------
+## parameters
+## -------------------------------------
+## TrimmingMethod        <- 'M2'
+## M1TrimmingCutoff      <- 1e-4
+## M2CutoffQualityScore  <- 55
+## M2SlidingWindowSize   <- 20
+## baseNumPerRow         <- 100
+## heightPerRow          <- 200
+## signalRatioCutoff     <- 0.33
+## read5primeOffset      <- 10
+## read3primeOffset      <- 10
+## allow2ndBasecallNotN  <- TRUE
+## minReadLength         <- 100
+## -------------------------------------
+
+## stem
+## stem: 'Dar[0-9]+[A-Z]*'
+## stem: 'ML2_L[0-9]+'
+## stem: 'Niv_IgG_[0-9]+'
+
+
+log_info('================================================')
+log_info('===== screen start...')
+log_info('================================================')
+
+## file suffix
+suffix         <- '.ab1$'
+
+## DFCODON
+DFCODON <- read_csv(yaml$codon_path)
+
+## output directory
+data_name <- str_extract(input_dir, pattern='(?<=/)[^/]+$')
+if (is.null(yaml$output_dir)==TRUE) {
+    output_dir <- sprintf('./result/%s', data_name)
+} else {
+    output_dir <- sprintf('%s/%s', str_replace_all(yaml$output_dir, '\\\\', '/'), data_name)
+}
+dir.create(output_dir, showWarnings=FALSE, recursive=TRUE)
+
+## read skiplist
+skip <- c('')
+if (length(skiplist_path) > 0) {
+    if (file.exists(skiplist_path)==TRUE){
+        skiplist <- read_excel(skiplist_path, sheet=skiplist_sheet)
+        if (length(skiplist$contigName)!=0){
+            skip <- unique(skiplist$contigName)
+            log_info('===== skip_list specified.')            
+        }
+    }
+}
+
+## read and save template.
+template_name <- str_extract(template_path, pattern='(?<=/)[^/]+$')
+TEMPLATE <- readDNAStringSet(template_path)
+if (nchar(as.character(TEMPLATE)) %% 3 != 0) {
+    stop('template sequence length must be multiple of 3.')
+}
+writeXStringSet(TEMPLATE, sprintf('%s/%s', output_dir, template_name))
+
+## read and save design
+## if (is.null(design_path) ==TRUE){
+##     stop('design file is not specified. ')
+## }
+
+## design_path is not specified, no section in param.yaml
+if (length(design_path)==0){
+    CHECK_N_MUTATION <- FALSE
+    log_info('===== design not specified.')
+
+## design_path is specified in param.yaml
+} else if (file.exists(design_path) == TRUE) {
+    CHECK_N_MUTATION <- TRUE ## global
+    log_info(sprintf('===== design specified: %s', design_path))
+    DESIGN <- read_design(design_path, design_sheet, output_dir) 
+
+## design_path is specified in param.yaml but not exist 
+} else {
+    CHECK_N_MUTATION <- FALSE
+    log_info('===== can not find specified design file.')
+}
+
+## min_contig
+## minimumContigLength   <- nchar(as.character(TEMPLATE))
+
+## get posa from template and length check
+posa <- getPosaFromTemplate(TEMPLATE)
+if (length(posa) == 0) {
+    stop('posa sholud be integer list. check your template. ')
+} 
+
+## check length of Posa & designed codon
+if (CHECK_N_MUTATION == TRUE){
+    if (max(DESIGN$N) != length(posa)){
+        stop('posa length and design length differ. check your design and template.')        
+    }
+    ## add Posa to DESIGN
+    tibble(N=seq(1, max(DESIGN$N)),
+           Posa=getPosaFromTemplate(TEMPLATE)) %>%
+        left_join(DESIGN, by='N', multiple='all') -> DESIGN
+}
+
+
+## read file & apply rerun_rule(exclude low quality data)
+if (rerun==1) {
+    fList <- read_flist2(input_dir, stem, suffix, forward_string, reverse_string) %>%
+        rerun_rule()
+} else if (rerun==0){
+    fList <- read_flist2(input_dir, stem, suffix, forward_string, reverse_string)
+} else {
+    stop('rerun should be 0(not apply rerun rule) or 1(apply rerun rule)')
+}
+
+## stop 
+if (nrow(fList)==0) {
+    stop(sprintf('can not find any ab1 files in %s: ', input_dir))
+}
+
+
+## Create final dataframe: res
+contigNames <- unique(fList$contigName)
+
+fList %>%
+    select(contigName) %>%
+    distinct() %>%
+    arrange(match(contigName, str_sort(contigNames, numeric=TRUE))) -> res
+
+
+log_info('================================================')
+log_info('===== reads processing...')
+log_info('================================================')
+
+## Following stores all reads information
+reads <- tibble()
+
+## For each contig
+for (i in 1: nrow(res)){
+
+    ctn <- res$contigName[i]
+
+    if (ctn %in% skip){
+        next
+    }
+
+    if (is.na(ctn)) {
+        next
+    }
+        
+    ## logging
+    log_info('=====================================================')
+    log_info(sprintf('===== contig: %s', ctn))
+    log_info('=====================================================')    
+
+    fList %>%
+        filter(contigName==ctn) -> contigList
+    
+    ## read and check
+    reads <- checkReads(contigList, reads, output_dir)
+}
+
+log_info('=====================================================')    
+log_info('===== add Mseq to reads...')
+log_info('=====================================================')    
+
+## Add Mseq
+reads %>%
+    mutate(Mseq=pmap(list(sequence=checkedPrimarySequence, posa=list(posa)), getMseq)) %>%
+    mutate(Mseqnt=pmap(list(sequence=checkedPrimarySequence, posa=list(posa)), getMseqNt)) %>%    
+    unnest(cols=c(Mseq, Mseqnt)) -> reads
+
+## Split Mseq to columns
+reads %>%
+    rename(Sequence=checkedPrimarySequence) -> reads
+
+getSingleMseq(reads, posa) %>%
+    unnest(cols=c(starts_with('Md'), starts_with('Ma'))) %>%
+    select(contigName, readName, readPath, direction, result,
+           checkedPrimarySequenceLength, 
+           n_insertion, n_deletion,
+           starts_with('n_unmatch'),
+           starts_with('n_silent'),
+           starts_with('n_2nd_basecall'),
+           Sequence, checkedSecondarySequence,
+           trimmedSeqLength, trimmedStartPos, trimmedFinishPos, rawMeanQualtiyScore,
+           trimmedMeanQualityScore, rawMinQualtiyScore, trimmedMinQualityScore, remainingRatio,
+           rawSeqLength, TrimmingMethod, M1TrimmingCutoff, M2CutoffQualityScore, M2SlidingWindowSize,
+           read5primeOffset, read3primeOffset,
+           Mseq, Mseqnt,
+           starts_with('Ma'),
+           starts_with('Md')) %>%
+    mutate(result = str_remove_all(result, 'OK, ')) %>%       ## 'OK, OK, OK' -> 'OK'
+    mutate(result = str_remove_all(result, ', OK')) -> reads  ## ', OK' -> 'OK'
+
+
+## if rename_path
+if (length(renamelist_path) > 0){
+    if (file.exists(renamelist_path) == TRUE) {
+        renamelist <- read_excel(renamelist_path) %>%
+            select(file, dst, sortid, dir2) %>%
+            rename(readName=dst) %>%
+            rename(srcName=file)
+        
+        reads %>%
+            left_join(renamelist, by='readName') %>%
+            select(contigName, srcName, readName, everything()) %>%
+            arrange(dir2, sortid) -> reads
+    }
+}
+
+## write_csv(reads, 'reads.csv', na='')
+
+log_info('=====================================================')    
+log_info('===== assemble contigs...')
+log_info('=====================================================')    
+
+rescontig <- tibble()
+
+for (i in 1: nrow(res)){
+
+    ctn <- res$contigName[i]
+
+    if (ctn %in% skip){
+        next
+    }
+
+    if (is.na(ctn)) {
+        next
+    }
+    
+    ## logging
+    log_info('=====================================================')    
+    log_info(sprintf('===== assemble contig: %s', ctn))
+    log_info('=====================================================')    
+
+    reads %>%
+        filter(contigName==ctn) -> contig
+
+    rescontig <- bind_rows(rescontig, checkContig(contig, output_dir))
+}
+
+res <- rescontig
+
+## update result
+res %>%
+    mutate(result = str_remove_all(result, 'OK, ')) %>%       ## 'OK, OK, OK' -> 'OK'
+    mutate(result = str_remove_all(result, ', OK')) -> res  ## ', OK' -> ''
+
+## updata Mseq
+res %>%
+    mutate(Mseq=pmap(list(sequence=Sequence, posa=list(posa)), getMseq)) %>%
+    mutate(Mseqnt=pmap(list(sequence=Sequence, posa=list(posa)), getMseqNt)) %>%    
+    unnest(cols=c(Mseq, Mseqnt)) -> res
+
+## clone group
+res %>%
+    filter(result=='OK' | result=='Unsupposed mutation detected., Silent mutation detected.') %>%
+    group_by(Mseq) %>%
+    mutate(group_id = cur_group_id()) %>%
+    ungroup() %>%
+    select(contigName, group_id) -> group_id
+
+## split character
+getSingleMseq(res, posa) %>%
+    left_join(group_id, by='contigName') %>%
+    unnest(cols=c(starts_with('Md'), starts_with('Ma'))) %>%
+    select(contigName, result,
+           group_id, SequenceLength,
+           starts_with('n_degenerate'),
+           starts_with('n_unmatch'),
+           starts_with('n_silent'),
+           starts_with('n_2nd_basecall'),
+           Sequence,
+           Mseq, Mseqnt,
+           starts_with('Ma'),
+           starts_with('Md')) -> res
+
+## if rename_path
+if (length(renamelist_path) > 0){
+    if (file.exists(renamelist_path) == TRUE) {
+        renamelist %>%
+            mutate(direction=str_extract(readName, str_c(c(forward_string, reverse_string), collapse='|'))) %>%
+            mutate(contigName=str_extract(readName, str_c('^.+(?=_', direction, ')'))) %>%
+            select(-c(srcName, readName, direction)) %>%
+            distinct() -> renamelist2
+        
+        res %>%
+            left_join(renamelist2, by='contigName') %>%
+            select(contigName, everything()) %>%
+            arrange(dir2, sortid) -> res
+        
+        reads %>%
+            mutate(dir=str_extract(readPath, pattern='.+(?=[/^].+$)')) %>%
+            select(contigName, srcName, readName, dir, readPath, everything()) -> reads
+        
+    } else {
+        reads %>%
+            mutate(dir=str_extract(readPath, pattern='.+(?=[/^].+$)')) %>%
+            select(contigName, readName, dir, readPath, everything()) -> reads
+    }
+}
+
+
+log_info('=====================================================')    
+log_info('===== Save results...')
+log_info('=====================================================')    
+
+readme <- read_excel('./misc/readme.xlsx', sheet='readme')
+description_column <- read_excel('./misc/readme.xlsx', sheet='description_column')
+description_value <- read_excel('./misc/readme.xlsx', sheet='description_value')
+
+
+x <- list(contig=res, read=reads, readme=readme, description_column=description_column, description_value=description_value)
+
+write.xlsx(x, sprintf('%s/reads.xlsx', output_dir), showNA=FALSE)
+
+log_success('================================================')
+log_success('===== Congratulations...!!')
+log_success('================================================')
+
+
+
+```
+
+

@@ -1,0 +1,98 @@
+## -------------------------------------
+## param.yaml for screen.Rmd
+## -------------------------------------
+
+## windows path also allowed; ex.) input_dir: 'C:\Users\taihi.kondou\data\230330-LC'  
+
+## -------------
+## Data read
+## -------------
+input_dir: '/app/benchling/screen/data/20230608'
+
+## -------------
+## Data output
+## -------------
+output_dir: '/app/benchling/screen/result'
+
+## -------------
+## Template
+## -------------
+##template_path: './misc/rk002_template_orf.fa'
+## template_path: './misc/Nivolumab_LC_Library_Kpn_Not.fa'
+template_path: '/app/benchling/screen/misc/niv_scFv_mp1_orf.fa'
+## template_path: './misc/rk002_template_orf.fa'
+
+## -------------
+## Mutation design
+## -------------
+## design_path: ''
+## design_path:  './misc/design_rk002.xlsx'
+## design_path:  './misc/Nivolumab_IgG_LC_design_1.xlsx'
+design_path: '/app/benchling/screen/misc/design_rk001_mp1.xlsx'
+## design_path :  './misc/design_rk002.xlsx'
+design_sheet: 'Sheet1'
+
+## -------------
+## F/R string
+## -------------
+forward_string:
+  - 'pro'
+  - 'promotor'
+  - 'Fw'
+  - 'forward'
+  - 'T7\.'
+
+reverse_string:
+  - 'term'
+  - 'terminator'
+  - 'Rv'
+  - 'reverse'
+  - 'T7-Term'
+
+## -------------
+## Misc
+## -------------
+
+## rename list ## if not null, concat rename_list(to show original name)
+## renamelist_path: 
+
+## rerun rule
+rerun:  0         ## 0: not apply rerun rule, 1: apply rerun rule
+
+## skip list
+skiplist_path: '/app/benchling/screen/misc/skip_list.xlsx'
+skiplist_sheet: 'Sheet1'
+
+## optimized codon table (not currently in use)
+codon_path: '/app/benchling/screen/misc/codon.83333/codon.ecoli.most.frequent.csv'
+
+## -------------
+## analysis
+## -------------
+#波形データの配列として一番確かなところを決める方法
+# m1 m2二つあります
+TrimmingMethod:      'M2'
+#M1
+M1TrimmingCutoff:     1e-4
+
+#The trimming cutoff quality score for the Method 2. If \code{TrimmingMethod} is \code{'M2'}, then the default value is \code{20}. Otherwise, the value must be \code{NULL}. It works with \code{M2SlidingWindowSize}.
+M2CutoffQualityScore: 55
+# The trimming sliding window size for the Method 2. If \code{TrimmingMethod} is \code{'M2'}, then the default value is \code{10}. Otherwise, the value must be \code{NULL}. It works with \code{M2CutoffQualityScore}.
+M2SlidingWindowSize:  20
+
+baseNumPerRow:        100
+heightPerRow:         200
+
+#シングルpeakではなく、mutiple peakある場合、secondary peak/prime peak > 0.33の時、怪しいと判断します
+#変異場所のみと全配列を見る二つの観点があり、改めて意見を聞く必要
+signalRatioCutoff:    0.33
+
+#M2より10ぐらい狭めてる、screenのパラメータ
+read5primeOffset:     10
+read3primeOffset:     10
+
+allow2ndBasecallNotN: TRUE
+#長くすれば長くほど厳しい
+minReadLength:        100
+minContigLength:      100
+

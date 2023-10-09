@@ -1,0 +1,134 @@
+---
+title: 'Codon frequency v2'
+vauthor: 'Ryou Yamazaki'
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    self_contained: true
+    code_folding: hide
+    toc: true
+    toc_float: true
+    highlight: zenburn
+---
+
+# Summary
+下記のサイトを参考に, アミノ酸と, 「そのアミノ酸に対応する大腸菌で発現しやすいと考えられるコドン」の対応表を作成する. 具体的には, アミノ酸毎に, そのアミノ酸をコードするトリプレットの中で, 最も出現頻度が高いトリプレットを選択する.   
+[reference](http://www.kazusa.or.jp/codon/cgi-bin/showcodon.cgi?species=37762)
+
+22.03.15 提出した配列では, 上記かずさ研究所のホームページで `species=37762` で表示される頻度を用いていたが, 開発当初は `species=83333` で表示される頻度を使用していいたとのことで, 作業をやり直す. 前回(`species=37762`)と, 今回(`species=83333`)の違いをTable0にまとめた.
+
+```{r setup, warning=FALSE, message=FALSE}
+library(readr)
+library(stringr)
+library(Biostrings)
+library(dplyr)
+library(tidyr)
+library(purrr)
+
+## letter
+translateA <- function(ltr){
+    ltr <- unname(GENETIC_CODE[ltr])
+    if (is.na(ltr)){ltr <- '-' }
+    return(ltr)
+}
+
+## sequence
+translateA.seq <- function(seq){
+    seq <- rev(rev(str_split(gsub('(.{3})', '\\1 ', seq), ' ')[[1]])[-1])
+    seq <- str_c(unlist(map(seq, translateA)), collapse = '')
+    return(seq)
+}
+
+## read_kazusa lab hp table
+## http://www.kazusa.or.jp/codon/cgi-bin/showcodon.cgi?species=37762
+## saved to codon.ecoli.txt
+
+read_kazusa <- function(path, skip=2){
+ 
+    d <- read_table(path, col_names=FALSE, skip=skip)
+
+    triplet <- c(d$X1, d$X4, d$X7, d$X10)
+    frequency <- c(d$X2, d$X5, d$X8, d$X11)
+    number <- c(d$X3, d$X6, d$X9, d$X12)
+
+    df <- as_tibble(data.frame(triplet=triplet, frequency=frequency, number=number))
+
+    df %>%
+        mutate(frequency = as.numeric(str_replace(frequency, '\\(', ''))) %>%
+        mutate(number = as.numeric(str_replace(number, '\\)', ''))) %>%
+        mutate(triplet = str_replace_all(triplet, 'U', 'T')) %>%
+        mutate(aa = map(triplet, translateA.seq)) %>%
+        unnest(cols=c(aa)) %>%
+        arrange(aa) -> df
+
+    return(df)
+    
+}
+
+```
+
+```{r warning=FALSE, message=FALSE}
+
+## Generate Ecoli optimized codon table
+##
+## This codon.ecoli.txt is copied from reference URL.
+path <- '/home/docker/Lab/ab1/codon.37762/codon.ecoli.37762.txt'
+df.o <- read_kazusa(path, skip=2)
+
+path <- '/home/docker/Lab/ab1/codon.ecoli.83333.txt'
+df <- read_kazusa(path, skip=2)
+
+
+## This dataframe contains most frequent triplet within each a.a.
+df.o %>%
+    group_by(aa) %>%
+    slice_max(frequency, n=1) -> df.o.max
+df %>%
+    group_by(aa) %>%
+    slice_max(frequency, n=1) -> df.max
+
+
+
+full_join(df.o.max, df.max, by=c('triplet', 'aa')) %>%
+    select(aa, triplet, everything()) %>%
+    dplyr::arrange(aa) %>%
+    dplyr::rename_with(~ str_replace(., '.x$', '.37762')) %>%
+    dplyr::rename_with(~ str_replace(., '.y$', '.83333')) -> d
+
+d %>%
+    DT::datatable(extensions='FixedColumns',
+                  caption=sprintf('Table 0: Codon frequency in E.coli. Difference between species=37762 and species=83333'),
+                  options=list(
+                      pageLength=50,
+                      scrollX = TRUE,
+                      scrollCollapse=TRUE,
+                      scrollY = '400px'
+                  ))
+
+df %>%
+    DT::datatable(extensions='FixedColumns',
+                  caption=sprintf('Table 1: Codon frequency in E.coli(83333).'),
+                  options=list(
+                      pageLength=50,
+                      scrollX = TRUE,
+                      scrollCollapse=TRUE,
+                      scrollY = '400px'
+                  ))
+
+df.max %>%
+    DT::datatable(extensions='FixedColumns',
+                  caption=sprintf('Table 2: Codon table most frequent in E.coli(83333).'),
+                  options=list(
+                      pageLength=50,
+                      scrollX = TRUE,
+                      scrollCollapse=TRUE,
+                      scrollY = '400px'
+                  ))
+
+write.csv(df, 'codon.ecoli.csv')
+write.csv(df.max, 'codon.ecoli.most.frequent.csv')
+
+
+```
+
+
